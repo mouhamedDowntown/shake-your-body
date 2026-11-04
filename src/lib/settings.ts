@@ -3,6 +3,8 @@ export interface Settings {
   eyeEveryMin: number;
   eyeBreaksOn: boolean;
   soundOn: boolean;
+  /** Keep the always-on-top mini window open (reopened on first click after reload). */
+  floatOn: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -10,6 +12,7 @@ export const DEFAULT_SETTINGS: Settings = {
   eyeEveryMin: 20,
   eyeBreaksOn: true,
   soundOn: true,
+  floatOn: false,
 };
 
 const KEY = "bouge.settings";

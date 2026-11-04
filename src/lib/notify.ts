@@ -15,10 +15,10 @@ export async function requestNotifications() {
   return Notification.requestPermission();
 }
 
-export function notify(title: string, body: string, onClick?: () => void) {
+export function notify(title: string, body: string, onClick?: () => void, sticky = false) {
   if (!notificationsSupported() || Notification.permission !== "granted") return;
   try {
-    const n = new Notification(title, { body, icon: "/icon.svg", tag: "bouge", requireInteraction: false });
+    const n = new Notification(title, { body, icon: "/icon.svg", tag: "bouge", requireInteraction: sticky });
     n.onclick = () => {
       window.focus();
       onClick?.();
