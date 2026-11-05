@@ -9,5 +9,9 @@ export default defineConfig({
   // strictPort because the desktop app (Tauri) expects exactly 5173
   server: { host: true, port: 5173, strictPort: true },
   clearScreen: false,
+  build: {
+    // index.html = the app, popup.html = the desktop tray popup
+    rollupOptions: { input: { main: "index.html", popup: "popup.html" } },
+  },
   test: { environment: "node" },
 });

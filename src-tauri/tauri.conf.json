@@ -20,6 +20,21 @@
         "minWidth": 380,
         "minHeight": 500,
         "visible": false
+      },
+      {
+        "label": "popup",
+        "title": "Bouge",
+        "url": "popup.html",
+        "width": 360,
+        "height": 240,
+        "visible": false,
+        "decorations": false,
+        "resizable": true,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "focus": false,
+        "shadow": true
       }
     ],
     "security": {

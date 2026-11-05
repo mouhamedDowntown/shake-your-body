@@ -10,7 +10,7 @@ import { formatMs, useScheduler } from "./lib/useScheduler";
 import { RoutinePlayer } from "./components/RoutinePlayer";
 import { EyeBreak } from "./components/EyeBreak";
 import { openPip, pipSupported } from "./lib/pip";
-import { appletActive, isDesktop, onDesktopAction, publishState, showWindow, type DesktopAction, type DesktopState } from "./lib/desktop";
+import { appletActive, isDesktop, onDesktopAction, publishState, showPopup, type DesktopAction, type DesktopState } from "./lib/desktop";
 
 /** A routine in progress. Lives here (not in the player) so the main window
  *  and the COSMIC applet always show the same step. */
@@ -85,13 +85,11 @@ export default function App() {
           true,
         );
         setOverlay((o) => (o?.kind === "player" ? o : { kind: "bubble" }));
-        // no panel applet (Windows, macOS…): the window is the reminder
-        if (isDesktop && !appletActive()) showWindow();
-      } else if (isDesktop && appletActive()) {
-        setEyeLeft(20); // runs in the panel applet
+        // no COSMIC applet (Windows, macOS…): pop up from the tray
+        if (isDesktop && !appletActive()) showPopup();
       } else if (isDesktop) {
-        showWindow();
-        setOverlay((o) => o ?? { kind: "eye" });
+        setEyeLeft(20); // counts down in the panel applet / tray popup
+        if (!appletActive()) showPopup();
       } else {
         notify("Eye break 👀", "Look 6 meters away for 20 seconds.", () => setOverlay({ kind: "eye" }));
         if (document.visibilityState === "visible" || pipWin) setOverlay((o) => o ?? { kind: "eye" });
@@ -168,7 +166,7 @@ export default function App() {
       suggested: { name: suggested.name, minutes: Math.round(estimateSeconds(suggested) / 60) },
       routine:
         overlay?.kind === "player" && step
-          ? { name: overlay.routine.name, index: overlay.index, total: overlay.routine.steps.length, left: overlay.left, exercise: step }
+          ? { id: overlay.routine.id, name: overlay.routine.name, index: overlay.index, total: overlay.routine.steps.length, left: overlay.left, exercise: step }
           : null,
       doneMinutes: overlay?.kind === "done" ? Math.max(1, Math.round(overlay.seconds / 60)) : null,
       breaksToday: stats.moveToday,
@@ -187,6 +185,7 @@ export default function App() {
   const desktopActions = useRef<(a: DesktopAction) => void>(() => {});
   desktopActions.current = (a) => {
     if (a === "go") startRoutine(suggested);
+    else if (a.startsWith("go:")) startRoutine(ROUTINES.find((r) => r.id === a.slice(3)) ?? suggested);
     else if (a === "snooze") {
       sched.restartMove(5);
       setOverlay(null);

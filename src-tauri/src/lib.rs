@@ -2,19 +2,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, State, WindowEvent,
 };
 
 #[cfg(target_os = "linux")]
 mod dbus;
+mod popup;
 
 /// Latest timer state as JSON, served to the COSMIC panel applet over D-Bus.
 #[derive(Default, Clone)]
 pub struct Published(pub Arc<Mutex<String>>);
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -28,6 +29,10 @@ pub(crate) fn applet_polled() {
 }
 
 fn applet_active() -> bool {
+    // lets you try the tray popup on COSMIC too
+    if std::env::var_os("BOUGE_NO_APPLET").is_some() {
+        return false;
+    }
     now_ms().saturating_sub(LAST_APPLET_POLL.load(Ordering::Relaxed)) < 5_000
 }
 
@@ -51,10 +56,16 @@ fn publish_state(app: AppHandle, published: State<Published>, title: String, too
     applet_active()
 }
 
-/// Bring the window to the front at break time (when there's no applet).
+/// "Settings & stats": the full window, for intervals and history.
 #[tauri::command]
-fn show_window(app: AppHandle) {
+fn open_settings(app: AppHandle) {
+    popup::hide(&app);
     show_main(&app);
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -62,42 +73,69 @@ pub fn run() {
     let published = Published::default();
     tauri::Builder::default()
         .manage(published.clone())
-        .invoke_handler(tauri::generate_handler![publish_state, show_window])
+        .invoke_handler(tauri::generate_handler![
+            publish_state,
+            open_settings,
+            quit_app,
+            popup::fit_popup,
+            popup::show_popup,
+            popup::hide_popup
+        ])
         .setup(move |app| {
-            let open = MenuItem::with_id(app, "open", "Open Bouge", true, None::<&str>)?;
+            // Left click opens the popup; right click shows this menu.
+            // (Linux trays don't report clicks, so there "Show Bouge" is it.)
+            let show = MenuItem::with_id(app, "show", "Show Bouge", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings & stats", true, None::<&str>)?;
+            let sep = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Bouge", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &settings, &sep, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Bouge")
                 .title("Bouge")
                 .menu(&menu)
+                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_main(app),
+                    "show" => popup::show(app),
+                    "settings" => {
+                        popup::hide(app);
+                        show_main(app);
+                    }
                     "quit" => app.exit(0),
                     _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { rect, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        let app = tray.app_handle();
+                        let scale = app.get_webview_window(popup::LABEL).and_then(|w| w.scale_factor().ok()).unwrap_or(1.0);
+                        popup::remember_tray(&rect, scale);
+                        popup::toggle(app);
+                    }
                 })
                 .build(app)?;
             #[cfg(target_os = "linux")]
             dbus::start(app.handle().clone(), published.0.clone());
-            // The window starts hidden; show it unless the COSMIC applet
-            // picks Bouge up within a few seconds.
+            // Nothing is shown at launch on COSMIC (the applet takes over);
+            // elsewhere pop up from the tray once so people see it's running.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(4));
                 if !applet_active() {
-                    show_main(&handle);
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || popup::show(&h));
                 }
             });
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                // Closing the window keeps Bouge running in the tray / panel
-                // applet (the timers live there). Quit from the applet or tray.
+        .on_window_event(|window, event| match event {
+            // Closing a window keeps Bouge running in the tray / panel applet
+            // (the timers live there). Quit from the popup, applet or tray.
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::Focused(false) if window.label() == popup::LABEL => popup::on_blur(window),
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running Bouge");
