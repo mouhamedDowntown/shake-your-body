@@ -10,6 +10,7 @@ import { formatMs, useScheduler } from "./lib/useScheduler";
 import { RoutinePlayer } from "./components/RoutinePlayer";
 import { EyeBreak } from "./components/EyeBreak";
 import { openPip, pipSupported } from "./lib/pip";
+import { isDesktop, onPillAction, sendPillState, setTrayTitle, type PillAction } from "./lib/desktop";
 
 type Overlay = { kind: "bubble" } | { kind: "player"; routine: Routine } | { kind: "eye" } | { kind: "done"; seconds: number } | null;
 
@@ -18,6 +19,8 @@ export default function App() {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [perm, setPerm] = useState(notificationPermission());
   const [showSettings, setShowSettings] = useState(false);
+  // Desktop app: the eye break runs in the floating pill, not in the main window
+  const [eyeDue, setEyeDue] = useState(false);
 
   const records = useLiveQuery(() => db.breaks.toArray().catch(() => []), [], []);
   const stats = computeStats(records);
@@ -74,6 +77,8 @@ export default function App() {
           true,
         );
         setOverlay((o) => (o?.kind === "player" ? o : { kind: "bubble" }));
+      } else if (isDesktop) {
+        setEyeDue(true);
       } else {
         notify("Eye break 👀", "Look 6 meters away for 20 seconds.", () => setOverlay({ kind: "eye" }));
         if (document.visibilityState === "visible" || pipWin) setOverlay((o) => o ?? { kind: "eye" });
@@ -102,6 +107,40 @@ export default function App() {
     if (overlay?.kind === "bubble" || overlay?.kind === "player") sched.restartMove();
     setOverlay(null);
   };
+
+  // Desktop app: keep the floating pill up to date and handle its buttons
+  const pillMode = eyeDue ? "eye" : overlay?.kind === "bubble" ? "move" : overlay?.kind === "player" ? "routine" : "idle";
+  useEffect(() => {
+    if (!isDesktop) return;
+    sendPillState({
+      moveRemaining: sched.moveRemaining,
+      eyeRemaining: settings.eyeBreaksOn ? sched.eyeRemaining : null,
+      paused: sched.paused,
+      mode: pillMode,
+      suggested: { name: suggested.name, minutes: Math.round(estimateSeconds(suggested) / 60) },
+    });
+    const title =
+      pillMode === "move" ? "🏃 Move!" : pillMode === "eye" ? "👀 Look away" : pillMode === "routine" ? "🏃 …" : sched.paused ? "⏸ paused" : `🏃 ${formatMs(sched.moveRemaining)}`;
+    setTrayTitle(title, settings.eyeBreaksOn && !sched.paused ? `Next eye break in ${formatMs(sched.eyeRemaining)}` : "Bouge");
+  }, [sched.now, sched.moveRemaining, sched.eyeRemaining, sched.paused, settings.eyeBreaksOn, pillMode, suggested]);
+
+  const pillActions = useRef<(a: PillAction) => void>(() => {});
+  pillActions.current = (a) => {
+    if (a === "go") startRoutine(suggested);
+    else if (a === "snooze") {
+      sched.restartMove(5);
+      setOverlay(null);
+    } else if (a === "skip") closeOverlay();
+    else if (a === "eye-done") {
+      setEyeDue(false);
+      logBreak({ type: "eye", at: Date.now(), seconds: 20 });
+    } else if (a === "eye-skip") setEyeDue(false);
+  };
+  useEffect(() => {
+    if (!isDesktop) return;
+    const un = onPillAction((a) => pillActions.current(a));
+    return () => void un.then((f) => f());
+  }, []);
 
   const moveTotal = settings.moveEveryMin * 60_000;
   const moveProgress = isFinite(sched.moveRemaining) ? 1 - sched.moveRemaining / moveTotal : 1;
@@ -180,7 +219,7 @@ export default function App() {
         </button>
       </header>
 
-      {perm !== "granted" && perm !== "unsupported" && (
+      {!isDesktop && perm !== "granted" && perm !== "unsupported" && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-800 dark:bg-amber-950">
           <span>Turn on notifications so Bouge can remind you even when this tab is in the background.</span>
           <button
