@@ -1,35 +1,21 @@
-import { useEffect, useState } from "react";
 import { EXERCISES, type Routine } from "../lib/exercises";
 import { Figure } from "./Figure";
 
 interface Props {
   routine: Routine;
-  onFinish: (seconds: number) => void;
+  /** current step */
+  index: number;
+  /** seconds left on a timed exercise */
+  left: number;
+  onNext: () => void;
   onQuit: () => void;
 }
 
-/** Steps through a routine one exercise at a time with a demo figure. */
-export function RoutinePlayer({ routine, onFinish, onQuit }: Props) {
-  const [index, setIndex] = useState(0);
-  const [startedAt] = useState(Date.now());
+/** Shows one step of a routine with a demo figure. The step and countdown are
+ *  owned by App, so the COSMIC applet can show (and drive) the same routine. */
+export function RoutinePlayer({ routine, index, left, onNext: next, onQuit }: Props) {
   const ex = EXERCISES[routine.steps[index]];
-  const [left, setLeft] = useState(ex.kind === "timed" ? ex.amount : 0);
   const isLast = index === routine.steps.length - 1;
-
-  useEffect(() => {
-    setLeft(ex.kind === "timed" ? ex.amount : 0);
-  }, [ex]);
-
-  useEffect(() => {
-    if (ex.kind !== "timed" || left <= 0) return;
-    const id = setTimeout(() => setLeft((l) => l - 1), 1000);
-    return () => clearTimeout(id);
-  }, [ex, left]);
-
-  const next = () => {
-    if (isLast) onFinish(Math.round((Date.now() - startedAt) / 1000));
-    else setIndex((i) => i + 1);
-  };
 
   const timedDone = ex.kind === "timed" && left <= 0;
 

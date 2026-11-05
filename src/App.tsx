@@ -3,24 +3,32 @@ import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db, logBreak } from "./lib/db";
 import { computeStats } from "./lib/stats";
-import { estimateSeconds, ROUTINES, suggestRoutine, type Routine } from "./lib/exercises";
+import { estimateSeconds, EXERCISES, ROUTINES, suggestRoutine, type Routine } from "./lib/exercises";
 import { loadSettings, saveSettings, type Settings } from "./lib/settings";
 import { chime, notificationPermission, notify, requestNotifications } from "./lib/notify";
 import { formatMs, useScheduler } from "./lib/useScheduler";
 import { RoutinePlayer } from "./components/RoutinePlayer";
 import { EyeBreak } from "./components/EyeBreak";
 import { openPip, pipSupported } from "./lib/pip";
-import { isDesktop, onPillAction, sendPillState, setTrayTitle, type PillAction } from "./lib/desktop";
+import { appletActive, isDesktop, onDesktopAction, publishState, showWindow, type DesktopAction, type DesktopState } from "./lib/desktop";
 
-type Overlay = { kind: "bubble" } | { kind: "player"; routine: Routine } | { kind: "eye" } | { kind: "done"; seconds: number } | null;
+/** A routine in progress. Lives here (not in the player) so the main window
+ *  and the COSMIC applet always show the same step. */
+type Session = { routine: Routine; index: number; left: number; startedAt: number };
+type Overlay = { kind: "bubble" } | ({ kind: "player" } & Session) | { kind: "eye" } | { kind: "done"; seconds: number } | null;
+
+const stepSeconds = (routine: Routine, index: number) => {
+  const ex = EXERCISES[routine.steps[index]];
+  return ex.kind === "timed" ? ex.amount : 0;
+};
 
 export default function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [perm, setPerm] = useState(notificationPermission());
   const [showSettings, setShowSettings] = useState(false);
-  // Desktop app: the eye break runs in the floating pill, not in the main window
-  const [eyeDue, setEyeDue] = useState(false);
+  // Desktop app: the eye break runs in the top bar (seconds left), not in a window
+  const [eyeLeft, setEyeLeft] = useState<number | null>(null);
 
   const records = useLiveQuery(() => db.breaks.toArray().catch(() => []), [], []);
   const stats = computeStats(records);
@@ -77,8 +85,13 @@ export default function App() {
           true,
         );
         setOverlay((o) => (o?.kind === "player" ? o : { kind: "bubble" }));
+        // no panel applet (Windows, macOS…): the window is the reminder
+        if (isDesktop && !appletActive()) showWindow();
+      } else if (isDesktop && appletActive()) {
+        setEyeLeft(20); // runs in the panel applet
       } else if (isDesktop) {
-        setEyeDue(true);
+        showWindow();
+        setOverlay((o) => o ?? { kind: "eye" });
       } else {
         notify("Eye break 👀", "Look 6 meters away for 20 seconds.", () => setOverlay({ kind: "eye" }));
         if (document.visibilityState === "visible" || pipWin) setOverlay((o) => o ?? { kind: "eye" });
@@ -89,7 +102,26 @@ export default function App() {
 
   const sched = useScheduler(settings, onDue);
 
-  const startRoutine = (routine: Routine) => setOverlay({ kind: "player", routine });
+  const startRoutine = (routine: Routine) =>
+    setOverlay({ kind: "player", routine, index: 0, left: stepSeconds(routine, 0), startedAt: Date.now() });
+
+  // Count down timed exercises
+  const playerLeft = overlay?.kind === "player" ? overlay.left : null;
+  useEffect(() => {
+    if (playerLeft === null || playerLeft <= 0) return;
+    const id = setTimeout(() => setOverlay((o) => (o?.kind === "player" ? { ...o, left: o.left - 1 } : o)), 1000);
+    return () => clearTimeout(id);
+  }, [playerLeft, overlay?.kind === "player" && overlay.index]);
+
+  const nextStep = () => {
+    if (overlay?.kind !== "player") return;
+    if (overlay.index >= overlay.routine.steps.length - 1) {
+      finishRoutine(overlay.routine, Math.round((Date.now() - overlay.startedAt) / 1000));
+    } else {
+      const index = overlay.index + 1;
+      setOverlay({ ...overlay, index, left: stepSeconds(overlay.routine, index) });
+    }
+  };
 
   const finishRoutine = async (routine: Routine, seconds: number) => {
     await logBreak({ type: "move", routineId: routine.id, at: Date.now(), seconds });
@@ -108,37 +140,68 @@ export default function App() {
     setOverlay(null);
   };
 
-  // Desktop app: keep the floating pill up to date and handle its buttons
-  const pillMode = eyeDue ? "eye" : overlay?.kind === "bubble" ? "move" : overlay?.kind === "player" ? "routine" : "idle";
+  // Desktop app: eye break countdown, shown in the top bar
+  useEffect(() => {
+    if (eyeLeft === null) return;
+    if (eyeLeft <= 0) {
+      setEyeLeft(null);
+      logBreak({ type: "eye", at: Date.now(), seconds: 20 });
+      if (settings.soundOn) chime();
+      return;
+    }
+    const id = setTimeout(() => setEyeLeft((l) => (l === null ? null : l - 1)), 1000);
+    return () => clearTimeout(id);
+  }, [eyeLeft, settings.soundOn]);
+
+  // Desktop app: publish the timers to the top bar / COSMIC applet
+  const mode =
+    eyeLeft !== null ? "eye" : overlay?.kind === "bubble" ? "move" : overlay?.kind === "player" ? "routine" : overlay?.kind === "done" ? "done" : "idle";
+  const step = overlay?.kind === "player" ? EXERCISES[overlay.routine.steps[overlay.index]] : null;
   useEffect(() => {
     if (!isDesktop) return;
-    sendPillState({
+    const state: DesktopState = {
       moveRemaining: sched.moveRemaining,
       eyeRemaining: settings.eyeBreaksOn ? sched.eyeRemaining : null,
+      eyeLeft,
       paused: sched.paused,
-      mode: pillMode,
+      mode,
       suggested: { name: suggested.name, minutes: Math.round(estimateSeconds(suggested) / 60) },
-    });
+      routine:
+        overlay?.kind === "player" && step
+          ? { name: overlay.routine.name, index: overlay.index, total: overlay.routine.steps.length, left: overlay.left, exercise: step }
+          : null,
+      doneMinutes: overlay?.kind === "done" ? Math.max(1, Math.round(overlay.seconds / 60)) : null,
+      breaksToday: stats.moveToday,
+    };
+    const stepLabel = step && overlay?.kind === "player" ? (step.kind === "reps" ? `${step.name} × ${step.amount}` : `${step.name} ${Math.max(0, overlay.left)}s`) : "";
     const title =
-      pillMode === "move" ? "🏃 Move!" : pillMode === "eye" ? "👀 Look away" : pillMode === "routine" ? "🏃 …" : sched.paused ? "⏸ paused" : `🏃 ${formatMs(sched.moveRemaining)}`;
-    setTrayTitle(title, settings.eyeBreaksOn && !sched.paused ? `Next eye break in ${formatMs(sched.eyeRemaining)}` : "Bouge");
-  }, [sched.now, sched.moveRemaining, sched.eyeRemaining, sched.paused, settings.eyeBreaksOn, pillMode, suggested]);
+      mode === "move" ? "🏃 Move!"
+      : mode === "eye" ? `👀 Look away ${eyeLeft}s`
+      : mode === "routine" ? `🏃 ${stepLabel}`
+      : mode === "done" ? "🎉 Nice work!"
+      : sched.paused ? "⏸ paused"
+      : `🏃 ${formatMs(sched.moveRemaining)}`;
+    publishState(title, settings.eyeBreaksOn && !sched.paused ? `Next eye break in ${formatMs(sched.eyeRemaining)}` : "Bouge", state);
+  }, [sched.now, sched.moveRemaining, sched.eyeRemaining, sched.paused, settings.eyeBreaksOn, mode, eyeLeft, suggested, overlay, step, stats.moveToday]);
 
-  const pillActions = useRef<(a: PillAction) => void>(() => {});
-  pillActions.current = (a) => {
+  const desktopActions = useRef<(a: DesktopAction) => void>(() => {});
+  desktopActions.current = (a) => {
     if (a === "go") startRoutine(suggested);
     else if (a === "snooze") {
       sched.restartMove(5);
       setOverlay(null);
     } else if (a === "skip") closeOverlay();
-    else if (a === "eye-done") {
-      setEyeDue(false);
-      logBreak({ type: "eye", at: Date.now(), seconds: 20 });
-    } else if (a === "eye-skip") setEyeDue(false);
+    else if (a === "eye-skip") setEyeLeft(null);
+    else if (a === "break-now") setOverlay({ kind: "bubble" });
+    else if (a === "pause") sched.pause();
+    else if (a === "resume") sched.resume();
+    else if (a === "next") nextStep();
+    else if (a === "stop") closeOverlay();
+    else if (a === "done-close") setOverlay(null);
   };
   useEffect(() => {
     if (!isDesktop) return;
-    const un = onPillAction((a) => pillActions.current(a));
+    const un = onDesktopAction((a) => desktopActions.current(a));
     return () => void un.then((f) => f());
   }, []);
 
@@ -183,7 +246,7 @@ export default function App() {
               </div>
             )}
             {overlay.kind === "player" && (
-              <RoutinePlayer routine={overlay.routine} onFinish={(s) => finishRoutine(overlay.routine, s)} onQuit={closeOverlay} />
+              <RoutinePlayer routine={overlay.routine} index={overlay.index} left={overlay.left} onNext={nextStep} onQuit={closeOverlay} />
             )}
             {overlay.kind === "eye" && <EyeBreak onDone={eyeDone} onSkip={() => setOverlay(null)} />}
             {overlay.kind === "done" && (

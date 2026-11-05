@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Bouge
+Comment=Break timer: time until your next move and eye break
+Type=Application
+Exec=@BIN@
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Iced;break;timer;
+Icon=alarm-symbolic
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-OverflowPriority=10

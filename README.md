@@ -40,6 +40,26 @@ npm test        # unit tests
 npm run build   # production build in dist/
 ```
 
+## Desktop app
+
+The desktop app (Tauri) runs in the background. On **Pop!_OS / COSMIC**, a panel
+applet shows the countdown in the top bar like the clock, and breaks — with the
+animated figure — play right in its popup. On **Windows, macOS** and other Linux
+desktops, the Bouge window opens and comes to the front at break time (the
+macOS menu bar also shows the countdown).
+
+```bash
+devenv shell              # Node, Rust, WebKitGTK… via Nix (no sudo)
+npm run tauri dev         # run the desktop app in dev mode
+install-desktop           # build + install ~/.local/bin/bouge and the COSMIC applet
+```
+
+After `install-desktop`, add the applet in COSMIC Settings → Desktop → Panel →
+Applets (or run `pkill -x cosmic-panel` to reload it).
+
+**Windows / macOS builds:** GitHub → Actions → *Desktop builds* → *Run
+workflow*. The installers appear under Releases as a pre-release.
+
 ## Project layout
 
 ```
@@ -57,6 +77,9 @@ src/
     notify.ts             notifications + chime (swap for Tauri later)
     settings.ts
   pose/README.md          plan for webcam rep counting (v2)
+src-tauri/                desktop app (Rust): tray, D-Bus service for the applet
+cosmic-applet/            COSMIC panel applet (Rust, libcosmic)
+devenv.nix                dev environment + install-desktop script
 ```
 
 ### Adding an exercise
